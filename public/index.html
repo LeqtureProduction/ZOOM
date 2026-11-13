@@ -345,6 +345,7 @@
         if (state !== "live") {
           soundHint.hidden = true;
           stopSoundWatch();
+          stopSizeWatch();
           if (isFull) leaveFullScreen();
         }
       }
@@ -459,10 +460,22 @@
 
       /* ---- 3. Player size: fills the stage, or the whole screen in full screen ---- */
 
+      // Zoom's player takes a size setting, but ignores it while someone shares
+      // their screen and never goes below its own height-to-width ratio. So the
+      // page sets the size, looks at what Zoom actually drew, and corrects the
+      // rest through the player's own resize handle (the same thing a viewer
+      // would do by dragging its corner). A check once a second repeats this
+      // whenever the layout changes, for example when screen sharing starts.
+
       var FS_BAR = 48;                 // height of the slim title bar in full screen
       var isFull = false;
-      var frame = { w: 0, h: 0 };      // space Zoom's own toolbars and edges take around the video
       var resizeTimer = null;
+      var watchTimer = null;
+      var fitRun = 0;                  // a newer fit cancels an older one
+      var fitBusy = false;
+      var lastSent = null;             // the size setting last given to Zoom
+      var settled = null;              // where the player ended up for a given goal
+      var frame = { w: 0, h: 0 };      // only used by the simple fallback below
 
       function videoOptions(width, height) {
         return {
@@ -472,33 +485,170 @@
         };
       }
 
+      // Size for the very first drawing, before anything can be measured.
       function playerSize() {
-        if (isFull) {
-          return {
-            width: Math.max(320, window.innerWidth - frame.w),
-            height: Math.max(180, window.innerHeight - FS_BAR - frame.h),
-          };
-        }
-        var width = Math.max(320, Math.floor(stage.clientWidth) - frame.w);
+        var width = Math.max(320, Math.floor(stage.clientWidth));
         return { width: width, height: Math.round(width * 9 / 16) };
       }
 
-      // Sets the size, then checks how much room Zoom's toolbars actually took
-      // and corrects once or twice so nothing sticks out or gets cut off.
-      function fitPlayer(pass) {
+      // The part of Zoom's player that holds the video and the shared screen.
+      function videoBox() {
+        return sdkElement.querySelector(".react-resizable");
+      }
+
+      // The size that box should have: full width of the stage (or screen), and
+      // in full screen also the full height minus Zoom's own toolbar.
+      function goalFor(box) {
+        var side = 0;
+        for (var el = box.parentElement; el && sdkElement.contains(el); el = el.parentElement) {
+          var cs = getComputedStyle(el);
+          side += (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0) +
+                  (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+        }
+        var available = isFull ? window.innerWidth : Math.floor(stage.clientWidth);
+        var goal = { w: Math.max(320, Math.floor(available - side)), h: null };
+        if (isFull) {
+          var around = Math.round(sdkElement.scrollHeight - box.getBoundingClientRect().height);
+          if (!(around >= 0 && around <= 320)) around = 0;
+          goal.h = Math.max(180, window.innerHeight - FS_BAR - around);
+        }
+        return goal;
+      }
+
+      function sameGoal(a, b) { return !!a && !!b && a.w === b.w && a.h === b.h; }
+
+      function isOff(goal, rect) {
+        return Math.abs(goal.w - rect.width) > 3 || (goal.h !== null && Math.abs(goal.h - rect.height) > 3);
+      }
+
+      // Moves the player's resize corner by the given distance. With "careful"
+      // it first goes a little too far and then comes back, which gets the
+      // player unstuck when it is sitting outside its own size limits.
+      function dragCorner(box, dx, dy, careful) {
+        var handle = box.querySelector(".react-resizable-handle");
+        if (!handle) return false;
+        var r = handle.getBoundingClientRect();
+        var x = r.left + r.width / 2;
+        var y = r.top + r.height / 2;
+        function mouse(target, type, cx, cy, buttons) {
+          target.dispatchEvent(new MouseEvent(type, {
+            bubbles: true, cancelable: true, view: window,
+            button: 0, buttons: buttons, clientX: cx, clientY: cy,
+          }));
+        }
+        try {
+          mouse(handle, "mousedown", x, y, 1);
+          if (!careful) {
+            mouse(document, "mousemove", x + dx, y + dy, 1);
+            mouse(document, "mouseup", x + dx, y + dy, 0);
+          } else {
+            var extraX = Math.abs(dx) > 3 ? (dx > 0 ? 40 : -40) : 0;
+            var extraY = Math.abs(dy) > 3 ? (dy > 0 ? 40 : -40) : 0;
+            mouse(document, "mousemove", x + dx + extraX, y + dy + extraY, 1);
+            setTimeout(function () {
+              try {
+                mouse(document, "mousemove", x + dx, y + dy, 1);
+                mouse(document, "mouseup", x + dx, y + dy, 0);
+              } catch (e) {}
+            }, 80);
+          }
+        } catch (e) {
+          return false;
+        }
+        return true;
+      }
+
+      function fitPlayer() {
         if (!clientReady || body.dataset.state !== "live") return;
-        pass = pass || 0;
-        var size = playerSize();
-        try { client.updateVideoOptions(videoOptions(size.width, size.height)); } catch (e) { return; }
+        var run = ++fitRun;
+        var box = videoBox();
+        if (!box) { fitBusy = false; fitSimple(run, 0); return; }
+
+        fitBusy = true;
+        var goal = goalFor(box);
+        var send = { w: goal.w, h: goal.h !== null ? goal.h : Math.round(goal.w * 9 / 16) };
+        var wait = 0;
+        if (!lastSent || lastSent.w !== send.w || lastSent.h !== send.h) {
+          lastSent = send;
+          try { client.updateVideoOptions(videoOptions(send.w, send.h)); } catch (e) {}
+          wait = 350;
+        }
+        setTimeout(function () { correct(run, 0, false); }, wait);
+      }
+
+      function correct(run, pass, careful) {
+        if (run !== fitRun) return;
+        var box = videoBox();
+        if (!box || body.dataset.state !== "live") { fitBusy = false; return; }
+
+        var goal = goalFor(box);
+        var rect = box.getBoundingClientRect();
+        var done = !isOff(goal, rect) || pass >= 8;
+        if (!done) {
+          var dx = goal.w - rect.width;
+          var dy = goal.h !== null ? goal.h - rect.height : 0;
+          done = !dragCorner(box, dx, dy, careful);
+        }
+        if (done) {
+          settled = { goal: goal, w: rect.width, h: rect.height };
+          fitBusy = false;
+          return;
+        }
+        setTimeout(function () {
+          if (run !== fitRun) return;
+          var again = videoBox();
+          var now = again ? again.getBoundingClientRect() : null;
+          var moved = !!now && (Math.abs(now.width - rect.width) >= 1 || Math.abs(now.height - rect.height) >= 1);
+          if (moved) correct(run, pass + 1, careful);
+          else if (!careful) correct(run, pass + 1, true);   // nothing happened: try the careful way
+          else correct(run, 8, true);                        // Zoom will not go further: accept it
+        }, careful ? 400 : 300);
+      }
+
+      // Once a second: has the layout changed (screen share started or stopped,
+      // different view)? If so, fit again.
+      function watchSize() {
+        if (fitBusy || !clientReady || body.dataset.state !== "live") return;
+        var box = videoBox();
+        if (!box) return;
+        var goal = goalFor(box);
+        var rect = box.getBoundingClientRect();
+        if (!isOff(goal, rect)) return;
+        if (settled && sameGoal(settled.goal, goal) &&
+            Math.abs(settled.w - rect.width) <= 3 && Math.abs(settled.h - rect.height) <= 3) return;
+        fitPlayer();
+      }
+
+      function startSizeWatch() {
+        clearInterval(watchTimer);
+        watchTimer = setInterval(watchSize, 1000);
+      }
+
+      function stopSizeWatch() {
+        clearInterval(watchTimer);
+        watchTimer = null;
+        fitRun++;
+        fitBusy = false;
+        lastSent = null;
+        settled = null;
+      }
+
+      // Fallback for a player version without that resize corner: size setting only.
+      function fitSimple(run, pass) {
+        if (run !== fitRun) return;
+        var full = isFull;
+        var width = Math.max(320, (full ? window.innerWidth : Math.floor(stage.clientWidth)) - frame.w);
+        var height = full ? Math.max(180, window.innerHeight - FS_BAR - frame.h) : Math.round(width * 9 / 16);
+        try { client.updateVideoOptions(videoOptions(width, height)); } catch (e) { return; }
 
         setTimeout(function () {
-          if (body.dataset.state !== "live") return;
-          var extraW = sdkElement.scrollWidth - size.width;
-          var extraH = sdkElement.scrollHeight - size.height;
+          if (run !== fitRun || body.dataset.state !== "live") return;
+          var extraW = sdkElement.scrollWidth - width;
+          var extraH = sdkElement.scrollHeight - height;
           var changed = false;
           if (extraW >= 0 && extraW <= 120 && Math.abs(extraW - frame.w) > 2) { frame.w = extraW; changed = true; }
           if (extraH >= 0 && extraH <= 260 && Math.abs(extraH - frame.h) > 2) { frame.h = extraH; changed = true; }
-          if (changed && pass < 2) fitPlayer(pass + 1);
+          if (changed && pass < 2) fitSimple(run, pass + 1);
         }, 400);
       }
 
@@ -508,6 +658,7 @@
         body.classList.toggle("fs", on);
         fsLabel.textContent = on ? "Exit full screen" : "Full screen";
         fsButton.setAttribute("aria-pressed", on ? "true" : "false");
+        settled = null;
         fitPlayer();
       }
 
@@ -550,7 +701,7 @@
 
       window.addEventListener("resize", function () {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(function () { fitPlayer(); }, 150);
+        resizeTimer = setTimeout(function () { settled = null; fitPlayer(); }, 150);
       });
 
       /* ---- 4. Sound: press Zoom's "Join Audio" button for the viewer ---- */
@@ -663,6 +814,7 @@
             say("");
             setState("live");
             fitPlayer();
+            startSizeWatch();
             switchSoundOn();
           })
           .catch(function (err) {
