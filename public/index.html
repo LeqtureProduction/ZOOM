@@ -52,7 +52,14 @@
       padding: 40px 24px 56px;
     }
 
-    header { margin-bottom: 20px; }
+    header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 20px;
+    }
+    .heading { min-width: 0; }
 
     .eyebrow {
       display: inline-flex;
@@ -122,9 +129,10 @@
       font-size: 14.5px;
     }
 
-    form { display: grid; gap: 10px; text-align: left; }
-    label { font-size: 13px; color: var(--stage-muted); }
-    input {
+    /* These rules are limited to the page's own form so they never restyle Zoom's buttons */
+    .panel form { display: grid; gap: 10px; text-align: left; }
+    .panel label { font-size: 13px; color: var(--stage-muted); }
+    .panel input {
       width: 100%;
       margin-top: 4px;
       padding: 11px 12px;
@@ -134,11 +142,11 @@
       border: 1px solid #34373c;
       border-radius: 8px;
     }
-    input:focus-visible, button:focus-visible {
+    .panel input:focus-visible, .panel button:focus-visible, .fs-button:focus-visible {
       outline: 2px solid var(--accent);
       outline-offset: 2px;
     }
-    button {
+    .panel button, .fs-button {
       margin-top: 4px;
       padding: 12px 16px;
       font: inherit;
@@ -149,8 +157,24 @@
       border-radius: 8px;
       cursor: pointer;
     }
-    button:hover { filter: brightness(1.08); }
-    button[disabled] { opacity: 0.6; cursor: default; filter: none; }
+    .panel button:hover { filter: brightness(1.08); }
+    .panel button[disabled] { opacity: 0.6; cursor: default; filter: none; }
+
+    /* Full screen button, next to the title */
+    .fs-button {
+      flex: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0;
+      padding: 9px 14px;
+      font-size: 14px;
+      color: var(--ink);
+      background: transparent;
+      border: 1px solid var(--line);
+    }
+    .fs-button:hover { filter: none; background: var(--card); }
+    .fs-button svg { width: 16px; height: 16px; flex: none; }
 
     .message {
       margin: 14px 0 0;
@@ -176,11 +200,57 @@
     }
     .setup ul { margin: 6px 0 0; padding-left: 20px; }
 
+    .hint {
+      margin: 12px 0 0;
+      font-size: 14px;
+      color: var(--ink);
+    }
+
     footer {
       margin-top: 16px;
       font-size: 13px;
       color: var(--muted);
     }
+
+    /* Full screen: a slim bar with the title and exit button, the player fills the rest */
+    body.fs { overflow: hidden; background: #000; }
+    body.fs .wrap { max-width: none; padding: 0; }
+    body.fs header {
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 48px;
+      margin: 0;
+      padding: 0 16px;
+      align-items: center;
+      background: #000;
+      color: #f2f1ed;
+      z-index: 5;
+    }
+    body.fs .eyebrow { display: none; }
+    body.fs h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    body.fs .fs-button { padding: 6px 12px; color: #f2f1ed; border-color: #3a3d42; }
+    body.fs .fs-button:hover { background: #1d1f22; }
+    body.fs .stage {
+      position: fixed;
+      top: 48px; left: 0; right: 0; bottom: 0;
+      width: auto;
+      min-height: 0;
+      border-radius: 0;
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      overflow: auto;
+    }
+    body.fs .hint, body.fs footer { display: none; }
 
     [hidden] { display: none !important; }
   </style>
@@ -189,8 +259,16 @@
 <body data-state="loading">
   <div class="wrap">
     <header>
-      <span class="eyebrow"><span class="dot"></span><span id="eyebrowText">Session</span></span>
-      <h1 id="pageTitle">Live session</h1>
+      <div class="heading">
+        <span class="eyebrow"><span class="dot"></span><span id="eyebrowText">Session</span></span>
+        <h1 id="pageTitle">Live session</h1>
+      </div>
+      <button class="fs-button" id="fsButton" type="button" aria-pressed="false" hidden>
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" />
+        </svg>
+        <span id="fsLabel">Full screen</span>
+      </button>
     </header>
 
     <main class="stage" id="stage">
@@ -201,7 +279,7 @@
       <div class="panel" id="panel">
         <div id="joinBox" hidden>
           <h2 id="panelHeading">Watch the session</h2>
-          <p id="panelText">Enter your name and the player opens right here on the page.</p>
+          <p id="panelText">Enter your name and the player opens right here on the page. Your browser may ask for microphone access; that is how Zoom switches the sound on. You join muted.</p>
           <form id="joinForm" novalidate>
             <label>Your name
               <input id="nameInput" name="name" type="text" autocomplete="name" maxlength="60" required />
@@ -218,6 +296,8 @@
         <p class="message" id="message" role="status" aria-live="polite">Loading…</p>
       </div>
     </main>
+
+    <p class="hint" id="soundHint" role="status" hidden>No sound? Click the headphone button in the player to switch it on.</p>
 
     <footer>The session plays in your browser. No Zoom download needed.</footer>
   </div>
@@ -250,6 +330,9 @@
       var eyebrowText = document.getElementById("eyebrowText");
       var panelHeading = document.getElementById("panelHeading");
       var panelText = document.getElementById("panelText");
+      var fsButton = document.getElementById("fsButton");
+      var fsLabel = document.getElementById("fsLabel");
+      var soundHint = document.getElementById("soundHint");
 
       var session = { askEmail: false, language: "en-US" };
       var client = null;
@@ -258,6 +341,12 @@
       function setState(state) {
         body.dataset.state = state;
         eyebrowText.textContent = state === "live" ? "Live now" : "Session";
+        fsButton.hidden = state !== "live";
+        if (state !== "live") {
+          soundHint.hidden = true;
+          stopSoundWatch();
+          if (isFull) leaveFullScreen();
+        }
       }
 
       function say(text, isProblem) {
@@ -348,29 +437,204 @@
         client = window.ZoomMtgEmbedded.createClient();
 
         // Make the player fill the stage instead of floating as a small window.
-        var width = Math.max(320, Math.floor(stage.clientWidth));
-        var height = Math.round(width * 9 / 16);
+        var size = playerSize();
 
         return client.init({
           zoomAppRoot: sdkElement,
           language: session.language || "en-US",
           patchJsMedia: true,
           leaveOnPageUnload: true,
-          customize: {
-            video: {
-              isResizable: false,
-              popper: { disableDraggable: true },
-              viewSizes: { default: { width: width, height: height } },
-            },
-          },
+          customize: { video: videoOptions(size.width, size.height) },
         }).then(function () {
           clientReady = true;
           client.on("connection-change", function (payload) {
             if (!payload) return;
             if (payload.state === "Closed") sessionEnded();
             if (payload.state === "Reconnecting") say("Reconnecting…");
+            // After a dropped connection comes back, the sound has to be switched on again.
+            if (payload.state === "Connected" && body.dataset.state === "live") switchSoundOn();
           });
         });
+      }
+
+      /* ---- 3. Player size: fills the stage, or the whole screen in full screen ---- */
+
+      var FS_BAR = 48;                 // height of the slim title bar in full screen
+      var isFull = false;
+      var frame = { w: 0, h: 0 };      // space Zoom's own toolbars and edges take around the video
+      var resizeTimer = null;
+
+      function videoOptions(width, height) {
+        return {
+          isResizable: false,
+          popper: { disableDraggable: true },
+          viewSizes: { default: { width: width, height: height } },
+        };
+      }
+
+      function playerSize() {
+        if (isFull) {
+          return {
+            width: Math.max(320, window.innerWidth - frame.w),
+            height: Math.max(180, window.innerHeight - FS_BAR - frame.h),
+          };
+        }
+        var width = Math.max(320, Math.floor(stage.clientWidth) - frame.w);
+        return { width: width, height: Math.round(width * 9 / 16) };
+      }
+
+      // Sets the size, then checks how much room Zoom's toolbars actually took
+      // and corrects once or twice so nothing sticks out or gets cut off.
+      function fitPlayer(pass) {
+        if (!clientReady || body.dataset.state !== "live") return;
+        pass = pass || 0;
+        var size = playerSize();
+        try { client.updateVideoOptions(videoOptions(size.width, size.height)); } catch (e) { return; }
+
+        setTimeout(function () {
+          if (body.dataset.state !== "live") return;
+          var extraW = sdkElement.scrollWidth - size.width;
+          var extraH = sdkElement.scrollHeight - size.height;
+          var changed = false;
+          if (extraW >= 0 && extraW <= 120 && Math.abs(extraW - frame.w) > 2) { frame.w = extraW; changed = true; }
+          if (extraH >= 0 && extraH <= 260 && Math.abs(extraH - frame.h) > 2) { frame.h = extraH; changed = true; }
+          if (changed && pass < 2) fitPlayer(pass + 1);
+        }, 400);
+      }
+
+      function setFull(on) {
+        if (isFull === on) return;
+        isFull = on;
+        body.classList.toggle("fs", on);
+        fsLabel.textContent = on ? "Exit full screen" : "Full screen";
+        fsButton.setAttribute("aria-pressed", on ? "true" : "false");
+        fitPlayer();
+      }
+
+      function nativeFullElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || null;
+      }
+
+      function enterFullScreen() {
+        var root = document.documentElement;
+        var request = root.requestFullscreen || root.webkitRequestFullscreen;
+        // Where the browser has no true full screen, fill the browser window instead.
+        if (!request) { setFull(true); return; }
+        try {
+          var result = request.call(root);
+          if (result && result.catch) result.catch(function () { setFull(true); });
+        } catch (e) {
+          setFull(true);
+        }
+      }
+
+      function leaveFullScreen() {
+        if (nativeFullElement()) {
+          var exit = document.exitFullscreen || document.webkitExitFullscreen;
+          if (exit) { try { var r = exit.call(document); if (r && r.catch) r.catch(function () {}); } catch (e) {} }
+        }
+        setFull(false);
+      }
+
+      function onNativeFullChange() { setFull(!!nativeFullElement()); }
+      document.addEventListener("fullscreenchange", onNativeFullChange);
+      document.addEventListener("webkitfullscreenchange", onNativeFullChange);
+
+      fsButton.addEventListener("click", function () {
+        if (isFull) leaveFullScreen(); else enterFullScreen();
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && isFull && !nativeFullElement()) setFull(false);
+      });
+
+      window.addEventListener("resize", function () {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(function () { fitPlayer(); }, 150);
+      });
+
+      /* ---- 4. Sound: press Zoom's "Join Audio" button for the viewer ---- */
+
+      // Zoom's player has no setting to start the sound by itself, so the page
+      // presses the player's own Join Audio button once it is ready, then mutes
+      // the viewer's microphone. If that doesn't work, a hint appears instead.
+      var soundTimer = null;
+
+      function stopSoundWatch() {
+        clearInterval(soundTimer);
+        soundTimer = null;
+      }
+
+      function findJoinAudioButton() {
+        // The headphone icon only exists while sound is still off (in any language).
+        var icon = document.querySelector('[aria-label="Headphone Meeting6"]');
+        return icon ? icon.closest("button") : null;
+      }
+
+      function microphoneState() {
+        if (!navigator.permissions || !navigator.permissions.query) return Promise.resolve("unknown");
+        return navigator.permissions.query({ name: "microphone" })
+          .then(function (status) { return status.state; })
+          .catch(function () { return "unknown"; });
+      }
+
+      function muteOwnMicrophone() {
+        setTimeout(function () {
+          try {
+            var result = client.mute(true);
+            if (result && result.catch) result.catch(function () {});
+          } catch (e) {}
+        }, 300);
+      }
+
+      function switchSoundOn() {
+        stopSoundWatch();
+        soundHint.hidden = true;
+
+        var started = Date.now();
+        var readySince = 0;      // when the button first became clickable
+        var clicks = 0;
+        var lastClick = 0;
+        var checking = false;
+
+        soundTimer = setInterval(function () {
+          if (body.dataset.state !== "live") { stopSoundWatch(); return; }
+
+          var now = Date.now();
+          var button = findJoinAudioButton();
+
+          // Button gone after we pressed it: the sound is on.
+          if (!button && clicks > 0) {
+            stopSoundWatch();
+            muteOwnMicrophone();
+            return;
+          }
+
+          if (button && !button.disabled) {
+            if (!readySince) readySince = now;
+
+            if (clicks === 0 && now - readySince >= 1500) {
+              button.click();
+              clicks = 1;
+              lastClick = now;
+            } else if (clicks === 1 && now - lastClick >= 10000 && !checking) {
+              // Still off after ten seconds. Try once more, but only if the browser
+              // already allows the microphone, so an open permission question
+              // is never interrupted.
+              checking = true;
+              microphoneState().then(function (state) {
+                var again = findJoinAudioButton();
+                if (state === "granted" && again && !again.disabled && soundTimer) again.click();
+                clicks = 2;
+              });
+            }
+          }
+
+          if (now - started > 30000) {
+            stopSoundWatch();
+            soundHint.hidden = false;
+          }
+        }, 500);
       }
 
       function join(name, email) {
@@ -398,6 +662,8 @@
           .then(function () {
             say("");
             setState("live");
+            fitPlayer();
+            switchSoundOn();
           })
           .catch(function (err) {
             console.error("Zoom join failed:", err);
