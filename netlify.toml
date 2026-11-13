@@ -1,0 +1,6 @@
+# Tells Netlify where things are. There is no build step.
+[build]
+  publish = "public"
+
+[functions]
+  directory = "netlify/functions"
